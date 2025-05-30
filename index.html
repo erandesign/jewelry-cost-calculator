@@ -1,0 +1,1209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>交互式珠宝成本计算器 - 表格悬停优化</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, getDocs, doc, getDoc, setDoc, deleteDoc, onSnapshot, query, orderBy, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.firebaseSDK = {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, addDoc, getDocs, doc, getDoc, setDoc, deleteDoc, onSnapshot, query, orderBy, serverTimestamp, setLogLevel
+        };
+    </script>
+    <!-- Visualization & Content Choices: (Largely same as previous, UI focus on enhanced interactivity and animations)
+        - Card entrance animation: fade in and slide up.
+        - Card hover: increased scale and shadow.
+        - Input focus: floating label animation.
+        - Button hover/active: scale and shadow transformations.
+        - Table row hover: REMOVED background highlight and left border.
+        - Calculated values: number "rolling" animation on change.
+        Justification: This version removes table row hover effects to prevent interference with input fields within table cells, while keeping other card and button animations.
+    -->
+    <style>
+        :root {
+            --page-bg: #f0f2f5; 
+            --card-bg: #ffffff;
+            --text-primary: #1f2937; 
+            --text-secondary: #4b5563; 
+            --text-muted: #6b7280; 
+            --border-color: #e5e7eb; 
+            --input-bg: #f9fafb; 
+            --input-border: #d1d5db; 
+            --input-focus-ring: #38b2ac; 
+            --input-label-color: var(--text-muted);
+            --input-label-focus-color: var(--accent-teal);
+            --table-header-bg: #f3f4f6; 
+            --table-header-text: #4b5563; 
+            --table-row-even-bg: #f9fafb; 
+            /* --table-row-hover-bg: #f0f9ff; Removed */
+            --accent-teal: #38b2ac; 
+            --accent-teal-light: #e6fffa; 
+            --accent-teal-darker: #2c7a7b; 
+            --accent-amber: #ed8936; 
+            --accent-amber-darker: #dd6b20; 
+            --calculated-value-text: var(--accent-teal);
+            --card-shadow: 0 6px 24px rgba(0,0,0,0.04), 0 1px 4px rgba(0,0,0,0.03);
+            --card-hover-shadow: 0 10px 30px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.06);
+        }
+
+        .dark-mode:root {
+            --page-bg: #1a1d24; 
+            --card-bg: #252a33; 
+            --text-primary: #e5e7eb; 
+            --text-secondary: #9ca3af; 
+            --text-muted: #6b7280; 
+            --border-color: #374151; 
+            --input-bg: #374151; 
+            --input-border: #4b5563; 
+            --input-focus-ring: #5eead4; 
+            --input-label-color: var(--text-secondary);
+            --input-label-focus-color: var(--accent-teal);
+            --table-header-bg: #374151; 
+            --table-header-text: #e5e7eb; 
+            --table-row-even-bg: #374151; 
+            /* --table-row-hover-bg: #2c3e50; Removed */
+            --accent-teal: #5eead4; 
+            --accent-teal-light: rgba(45, 212, 197, 0.1); 
+            --accent-teal-darker: #2dd4bf; 
+            --accent-amber: #fbbf24; 
+            --accent-amber-darker: #fde047; 
+            --calculated-value-text: var(--accent-teal);
+            --card-shadow: 0 8px 30px rgba(0,0,0,0.2); 
+            --card-hover-shadow: 0 12px 35px rgba(0,0,0,0.35);
+        }
+
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: var(--page-bg); 
+            color: var(--text-primary);
+            transition: background-color 0.3s, color 0.3s;
+        }
+        .section-card { 
+            @apply mb-12 p-6 sm:p-8 rounded-xl opacity-0; 
+            background-color: var(--card-bg);
+            box-shadow: var(--card-shadow); 
+            transition: background-color 0.3s, box-shadow 0.3s, transform 0.3s ease-out;
+            animation: card-enter 0.5s ease-out forwards;
+        }
+        
+        .section-card:nth-child(1) { animation-delay: 0.1s; }
+        .section-card:nth-child(2) { animation-delay: 0.2s; }
+        .section-card:nth-child(3) { animation-delay: 0.3s; }
+        .section-card:nth-child(4) { animation-delay: 0.4s; }
+        .section-card:nth-child(5) { animation-delay: 0.5s; }
+        .section-card:nth-child(6) { animation-delay: 0.6s; }
+        .section-card:nth-child(7) { animation-delay: 0.7s; }
+        .section-card:nth-child(8) { animation-delay: 0.8s; }
+        .section-card:nth-child(9) { animation-delay: 0.9s; }
+
+
+        @keyframes card-enter {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .section-card:hover {
+            transform: translateY(-8px) scale(1.01); 
+            box-shadow: var(--card-hover-shadow);
+        }
+        
+        .form-group { @apply mb-6 relative pt-2; } 
+        .form-group label { 
+            @apply absolute left-4 transition-all duration-200 ease-out pointer-events-none; 
+            top: 0.85rem; 
+            font-size: 1rem; 
+            color: var(--input-label-color);
+            background-color: var(--input-bg); 
+            padding: 0 0.25rem;
+        }
+        .input-field:focus + label, 
+        .input-field.has-value + label,
+        textarea.input-field:focus + label,
+        textarea.input-field.has-value + label,
+        select.input-field:focus + label,
+        select.input-field.has-value + label {
+            top: -0.65rem; 
+            font-size: 0.75rem; 
+            color: var(--input-label-focus-color);
+        }
+        
+        .input-field, .input-field-sm, select.input-field { 
+            @apply w-full border rounded-lg shadow-sm transition-colors; 
+            background-color: var(--input-bg);
+            border-color: var(--input-border);
+            color: var(--text-primary);
+        }
+        .dark-mode .input-field::placeholder, 
+        .dark-mode .input-field-sm::placeholder { color: var(--text-muted); }
+        .input-field:focus, .input-field-sm:focus, select.input-field:focus {
+            @apply outline-none ring-2;
+            ring-color: var(--input-focus-ring);
+            border-color: var(--input-focus-ring); 
+        }
+        .input-field { @apply px-4 py-2.5; } 
+        .input-field-sm { @apply px-2 py-1.5 text-xs; } 
+        
+        textarea.input-field { resize: both; min-height: 6rem; }
+
+        .btn { @apply px-5 py-2.5 rounded-lg shadow-sm transition-all duration-200 ease-in-out font-medium flex items-center justify-center text-sm; } 
+        .btn:hover { transform: translateY(-2px) scale(1.03); filter: brightness(110%); box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .btn:active { transform: translateY(0px) scale(0.97); filter: brightness(90%); }
+        .dark-mode .btn:hover { filter: brightness(120%); }
+        .dark-mode .btn:active { filter: brightness(80%); }
+
+        .btn-primary { background-color: var(--accent-teal); color: white; }
+        .dark-mode .btn-primary { color: var(--page-bg); } 
+        .btn-primary:hover { background-color: var(--accent-teal-darker); }
+        .btn-secondary { background-color: var(--border-color); color: var(--text-primary); }
+        .btn-secondary:hover { background-color: var(--input-border); }
+        .btn-danger { @apply bg-red-600 text-white hover:bg-red-700; }
+        .btn-warning { background-color: var(--accent-amber); color: white; }
+        .dark-mode .btn-warning { color: var(--page-bg); } 
+        .btn-warning:hover { background-color: var(--accent-amber-darker); }
+        .btn-gemini {
+            background-color: var(--accent-amber); color: white;
+            @apply mt-3; 
+        }
+        .dark-mode .btn-gemini { color: var(--page-bg); }
+        .btn-gemini:hover { background-color: var(--accent-amber-darker); }
+        
+        .section-title { 
+            @apply text-xl sm:text-2xl font-semibold mb-8 pb-4; 
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
+        }
+       
+        .table-header { 
+            font-medium;
+            background-color: var(--table-header-bg); 
+            color: var(--table-header-text);
+        }
+        .table-body tr { background-color: var(--card-bg); /* Removed transition */ position:relative; } 
+        .dark-mode .table-body tr { background-color: transparent; } 
+        .table-body tr:nth-child(even) { background-color: var(--table-row-even-bg); }
+        /* Removed .table-body tr:hover and .table-body tr:hover::before styles */
+
+
+        .compact-table { table-layout: auto; width: 100%; } 
+        .compact-table th, .compact-table td { @apply px-2 py-2 text-xs text-center; vertical-align: middle;} 
+        .compact-table .col-name { @apply text-left; width: 25%; min-width: 100px;} 
+        .compact-table .col-price { width: 13%; min-width: 70px;}
+        .compact-table .col-unit { width: 10%; min-width: 50px;}
+        .compact-table .col-number { width: 12%; min-width: 60px;}
+        .compact-table .col-action { width: 10%; min-width: 50px;}
+        .compact-table .input-field-sm { @apply py-1 px-1.5 w-full; }
+        .compact-table .input-field-sm.name-field { @apply text-left; }
+
+
+        .calculated-value { font-weight: 600; color: var(--calculated-value-text); transition: color 0.3s, transform 0.3s; }
+        .value-changed {
+            animation: value-pop 0.5s ease-out;
+        }
+        @keyframes value-pop {
+            0% { transform: scale(1); color: var(--calculated-value-text); }
+            50% { transform: scale(1.15); color: var(--accent-amber); }
+            100% { transform: scale(1); color: var(--calculated-value-text); }
+        }
+
+
+        .summary-item { @apply flex justify-between items-center py-2.5; border-bottom: 1px solid var(--border-color); } 
+        .summary-item:last-child { border-bottom: none; }
+        .total-summary-item { border-top: 2px solid var(--accent-teal); color: var(--accent-teal); @apply pt-2.5; } 
+
+        .chart-container { position: relative; width: 100%; max-width: 400px; margin-left: auto; margin-right: auto; height: 300px; max-height: 350px; @apply mt-6; } 
+        @media (min-width: 768px) { .chart-container { height: 320px; } }
+        
+        .modal { @apply fixed inset-0 bg-black bg-opacity-60 overflow-y-auto h-full w-full flex justify-center items-center z-50 p-4; }
+        .modal-content { @apply p-6 sm:p-8 rounded-lg shadow-xl max-w-2xl w-full mx-auto; background-color: var(--card-bg); }
+        .icon-spacing { @apply mr-2 text-base; }
+
+        .srp-box { background-color: var(--accent-teal-light); border-radius: 0.5rem; padding: 1rem; text-align: center; @apply mt-4; } 
+        .srp-box .srp-label { color: var(--accent-teal-darker); font-size: 0.875rem; }
+        .dark-mode .srp-box .srp-label { color: var(--accent-teal); }
+        .srp-box .srp-value { color: var(--accent-teal); font-size: 1.875rem; font-weight: 700; }
+        .dark-mode .srp-box .srp-value { color: var(--accent-teal); }
+
+        #themeToggle {
+            @apply fixed top-4 right-4 p-2.5 rounded-full shadow-lg z-[70]; 
+            background-color: var(--card-bg); color: var(--text-secondary); border: 1px solid var(--border-color);
+        }
+        #themeToggle:hover { background-color: var(--input-bg); }
+        
+        .loading-overlay, .gemini-loading-overlay {
+            @apply fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[60]; 
+            color: white; font-size: 1.25rem;
+        }
+        .dark-mode .loading-overlay, .dark-mode .gemini-loading-overlay { background-color: rgba(0,0,0,0.8); }
+        
+        p.text-sm { @apply leading-relaxed mb-8; } 
+
+        #geminiResponseModal .modal-content {
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        #geminiResponseText {
+            white-space: pre-wrap; 
+            font-family: monospace;
+            background-color: var(--input-bg);
+            padding: 1rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--border-color);
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        .btn-gemini .spinner {
+            @apply inline-block w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin ml-2;
+        }
+
+    </style>
+</head>
+<body> 
+    <div id="loadingOverlay" class="loading-overlay hidden">正在加载...</div>
+    <div id="geminiLoadingOverlay" class="gemini-loading-overlay hidden">✨ AI 正在思考中...<span class="spinner"></span></div>
+
+    <button id="themeToggle" title="切换日夜模式">
+        <span id="themeIcon">☀️</span>
+    </button>
+
+    <div class="container mx-auto p-4 sm:p-6 lg:p-8 max-w-4xl"> 
+        <header class="mb-12 text-center"> 
+            <h1 class="text-3xl sm:text-4xl font-bold" style="color: var(--accent-teal);">交互式珠宝成本计算器</h1>
+            <p style="color: var(--text-secondary);" class="mt-3 text-base sm:text-lg">精细化成本核算，助力您的珠宝设计事业。</p>
+        </header>
+
+        <section id="archiveSection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">🗃️</span>产品存档与管理 (Firestore)</h2>
+            <p class="text-sm" style="color: var(--text-muted);">产品数据将保存在云端数据库。加载列表可能需要一些时间。</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-6 items-end mt-6"> 
+                <div class="form-group lg:col-span-2">
+                    <select id="savedProducts" class="input-field"></select>
+                    <label for="savedProducts" class="sr-only">已存档产品列表</label>
+                </div>
+                <div class="form-group"><button id="loadProductBtn" class="btn btn-secondary w-full"><span class="icon-spacing">📂</span>加载</button></div>
+                <div class="form-group"><button id="deleteProductBtn" class="btn btn-danger w-full"><span class="icon-spacing">🗑️</span>删除</button></div>
+                <div class="form-group md:col-span-2 lg:col-span-4"><button id="saveProductBtn" class="btn btn-primary w-full"><span class="icon-spacing">💾</span>保存当前产品</button></div>
+            </div>
+            <div class="mt-8 text-center"><button id="generateReportBtn" class="btn btn-warning"><span class="icon-spacing">📄</span>生成产品报告</button></div>
+        </section>
+
+        <section id="productInfoSection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">ℹ️</span>1. 产品基本信息</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-0"> 
+                <div class="form-group">
+                    <input type="text" id="productSKU" class="input-field" placeholder=" "> 
+                    <label for="productSKU">产品款式编号 (SKU)</label>
+                </div>
+                <div class="form-group">
+                    <input type="text" id="productName" class="input-field" placeholder=" ">
+                    <label for="productName">产品名称</label>
+                </div>
+                <div class="form-group">
+                    <input type="date" id="designDate" class="input-field"> 
+                    <label for="designDate">设计日期</label>
+                </div>
+                <div class="form-group">
+                    <input type="text" id="designerName" class="input-field" placeholder=" ">
+                    <label for="designerName">设计师</label>
+                </div>
+                <div class="form-group md:col-span-2">
+                    <textarea id="productDescription" rows="3" class="input-field" placeholder=" "></textarea>
+                    <label for="productDescription">产品描述</label>
+                    <button id="enhanceDescriptionBtn" class="btn btn-gemini w-full sm:w-auto"><span class="icon-spacing">✨</span>优化描述 (AI)<span class="spinner hidden"></span></button>
+                </div>
+            </div>
+        </section>
+
+        <section id="gemstoneCostSection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">💎</span>2. 宝石成本</h2>
+            <p class="text-sm" style="color: var(--text-muted);">列出所有宝石类材料的成本。</p>
+            <div class="overflow-x-auto mt-6">
+                <table class="min-w-full divide-y rounded-md compact-table" style="border: 1px solid var(--border-color); divide-color: var(--border-color);">
+                    <thead class="table-header"><tr><th class="col-name">名称/规格</th><th class="col-price">购入单价(¥)</th><th class="col-unit">购入单位</th><th class="col-number">单位数量</th><th class="col-price">单位成本(¥)</th><th class="col-number">使用数量</th><th class="col-price">小计(¥)</th><th class="col-action">操作</th></tr></thead>
+                    <tbody id="gemstoneRows" class="table-body divide-y" style="divide-color: var(--border-color);"></tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-6"> 
+                <button id="addGemstoneRow" class="btn btn-primary btn-sm"><span class="icon-spacing">✨</span>添加宝石</button>
+                <div class="text-lg"><strong>宝石总成本: ¥<span id="totalGemstoneCost" class="calculated-value">0.00</span></strong></div>
+            </div>
+        </section>
+
+        <section id="accessoryCostSection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">🔗</span>3. 配件成本</h2>
+            <p class="text-sm" style="color: var(--text-muted);">列出所有金属配件、线材等非宝石类材料的成本。</p>
+            <div class="overflow-x-auto mt-6">
+                 <table class="min-w-full divide-y rounded-md compact-table" style="border: 1px solid var(--border-color); divide-color: var(--border-color);">
+                    <thead class="table-header"><tr><th class="col-name">名称/规格</th><th class="col-price">购入单价(¥)</th><th class="col-unit">购入单位</th><th class="col-number">单位数量</th><th class="col-price">单位成本(¥)</th><th class="col-number">使用数量</th><th class="col-price">小计(¥)</th><th class="col-action">操作</th></tr></thead>
+                    <tbody id="accessoryRows" class="table-body divide-y" style="divide-color: var(--border-color);"></tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-6"> 
+                <button id="addAccessoryRow" class="btn btn-primary btn-sm"><span class="icon-spacing">🔗</span>添加配件</button>
+                <div class="text-right text-lg"><strong>配件总成本: ¥<span id="totalAccessoryCost" class="calculated-value">0.00</span></strong></div>
+            </div>
+        </section>
+        
+        <section id="designOperatingCostSection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">⚙️</span>4. 设计与运营成本</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-0 items-center">
+                <div class="form-group"><input type="number" id="fixedDesignFee" class="input-field" value="0" min="0" step="1" placeholder=" "><label for="fixedDesignFee">固定设计费 (¥)</label></div>
+                <div class="form-group"><input type="number" id="allocatedOperatingCost" class="input-field" value="0" min="0" step="1" placeholder=" "><label for="allocatedOperatingCost">运营成本分摊 (¥)</label></div>
+            </div>
+        </section>
+
+        <section id="wastageCostSection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">📉</span>5. 损耗成本</h2>
+            <p class="text-sm" style="color: var(--text-muted);">估算在制作过程中可能产生的材料损耗。这通常是宝石和配件总成本的一个百分比。</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-0 items-center">
+                <div class="form-group"><input type="number" id="wastageRate" class="input-field" value="5" min="0" step="0.1" placeholder=" "><label for="wastageRate">预估损耗率 (%)</label></div>
+                <div class="text-lg md:text-right form-group md:pt-6"><strong>损耗成本: ¥<span id="wastageCost" class="calculated-value">0.00</span></strong></div>
+            </div>
+        </section>
+
+        <section id="laborCostSection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">🛠️</span>6. 人工成本 (制作)</h2>
+            <p class="text-sm" style="color: var(--text-muted);">评估您在实际制作上投入的时间价值。</p>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-0 items-center">
+                <div class="form-group"><input type="number" id="laborHours" class="input-field" value="0.75" min="0" step="0.01" placeholder=" "><label for="laborHours">预估制作工时 (小时)</label></div>
+                <div class="form-group"><input type="number" id="hourlyRate" class="input-field" value="60" min="0" step="1" placeholder=" "><label for="hourlyRate">时薪标准 (¥/小时)</label></div>
+                <div class="text-lg md:text-right form-group md:pt-6"><strong>人工成本: ¥<span id="laborCost" class="calculated-value">0.00</span></strong></div>
+            </div>
+        </section>
+
+        <section id="packagingCostSection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">📦</span>7. 包装成本</h2>
+            <p class="text-sm" style="color: var(--text-muted);">记录所有用于成品包装的材料成本。表格结构已更新，类似材料成本。</p>
+             <div class="overflow-x-auto mt-6">
+                <table class="min-w-full divide-y rounded-md compact-table" style="border: 1px solid var(--border-color); divide-color: var(--border-color);">
+                    <thead class="table-header"><tr><th class="col-name">包装项</th><th class="col-price">购入单价(¥)</th><th class="col-unit">购入单位</th><th class="col-number">单位数量</th><th class="col-price">单位成本(¥)</th><th class="col-number">使用数量</th><th class="col-price">小计(¥)</th><th class="col-action">操作</th></tr></thead>
+                    <tbody id="packagingRows" class="table-body divide-y" style="divide-color: var(--border-color);"></tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-6"> 
+                <button id="addPackagingRow" class="btn btn-primary btn-sm"><span class="icon-spacing">🎁</span>添加包装项</button>
+                <div class="text-right text-lg"><strong>包装总成本: ¥<span id="totalPackagingCost" class="calculated-value">0.00</span></strong></div>
+            </div>
+        </section>
+
+        <section id="summarySection" class="section-card">
+            <h2 class="section-title"><span class="icon-spacing">📊</span>8. 总成本与定价建议</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div>
+                    <h3 class="text-xl font-medium mb-6 mt-0" style="color: var(--text-secondary);">成本明细汇总</h3>
+                    <div class="space-y-2 text-sm"> 
+                        <div class="summary-item"><span>宝石总成本:</span><span class="font-medium">¥<span id="summaryGemstoneCost">0.00</span></span></div>
+                        <div class="summary-item"><span>配件总成本:</span><span class="font-medium">¥<span id="summaryAccessoryCost">0.00</span></span></div>
+                        <div class="summary-item"><span>固定设计费:</span><span class="font-medium">¥<span id="summaryDesignFee">0.00</span></span></div>
+                        <div class="summary-item"><span>运营成本分摊:</span><span class="font-medium">¥<span id="summaryOperatingCost">0.00</span></span></div>
+                        <div class="summary-item"><span>损耗成本:</span><span class="font-medium">¥<span id="summaryWastageCost">0.00</span></span></div>
+                        <div class="summary-item"><span>人工成本 (制作):</span><span class="font-medium">¥<span id="summaryLaborCost">0.00</span></span></div>
+                        <div class="summary-item"><span>包装总成本:</span><span class="font-medium">¥<span id="summaryPackagingCost">0.00</span></span></div>
+                        <div class="summary-item total-summary-item mt-3 pt-3"><strong class="text-lg">直接总成本:</strong><strong class="text-lg">¥<span id="totalDirectCost" class="calculated-value">0.00</span></strong></div>
+                    </div>
+                    <div class="mt-8 form-group"><input type="number" id="profitMarkup" class="input-field" value="3" min="1" step="0.1" placeholder=" "><label for="profitMarkup">目标利润倍数</label></div>
+                    <div class="mt-4 srp-box"><p class="srp-label">建议零售价 (SRP):</p><p class="srp-value">¥<span id="suggestedRetailPrice">0.00</span></p></div>
+                     <div class="mt-8 text-center">
+                        <button id="getCostAnalysisBtn" class="btn btn-gemini w-full sm:w-auto"><span class="icon-spacing">✨</span>获取成本分析 (AI)<span class="spinner hidden"></span></button>
+                    </div>
+                </div>
+                <div>
+                    <h3 class="text-xl font-medium mb-6 mt-0" style="color: var(--text-secondary);">成本构成图表</h3>
+                     <div class="chart-container"><canvas id="costBreakdownChart"></canvas></div>
+                </div>
+            </div>
+        </section>
+
+        <div id="geminiResponseModal" class="modal hidden">
+            <div class="modal-content">
+                <div class="flex justify-between items-center mb-4 pb-2" style="border-bottom: 1px solid var(--border-color);">
+                    <h2 id="geminiModalTitle" class="text-xl font-semibold" style="color: var(--accent-teal);">AI 助手</h2>
+                    <button id="closeGeminiModalBtn" style="color: var(--text-muted);" class="hover:text-red-500 text-3xl leading-none">&times;</button>
+                </div>
+                <div id="geminiResponseText" class="text-sm leading-relaxed" style="color: var(--text-primary);">
+                    </div>
+                 <div class="mt-6 text-right">
+                    <button id="copyGeminiResponseBtn" class="btn btn-secondary btn-sm mr-2">复制内容</button>
+                    <button id="closeGeminiModalBtnSecondary" class="btn btn-secondary btn-sm">关闭</button>
+                </div>
+            </div>
+        </div>
+
+
+        <div id="reportModal" class="modal hidden">
+            <div class="modal-content overflow-y-auto max-h-[90vh]">
+                <div class="flex justify-between items-center mb-6 pb-3" style="border-bottom: 1px solid var(--border-color);"><h2 class="text-2xl font-semibold" style="color: var(--accent-teal);">产品成本报告</h2><button id="closeReportModalBtn" style="color: var(--text-muted);" class="hover:text-red-500 text-3xl leading-none">&times;</button></div>
+                <div id="reportContent" class="space-y-4 text-sm"></div>
+                 <div class="mt-8 text-right space-x-3"><button onclick="window.print()" class="btn btn-primary"><span class="icon-spacing">🖨️</span>打印报告</button><button id="closeReportModalBtnSecondary" class="btn btn-secondary">关闭</button></div>
+            </div>
+        </div>
+
+        <footer class="text-center mt-12 py-8" style="border-top: 1px solid var(--border-color);">
+            <p class="text-sm" style="color: var(--text-muted);">&copy; <span id="currentYear"></span> 珠宝成本计算器. 专为珠宝设计师打造。</p>
+        </footer>
+    </div>
+
+<script type="module">
+    const { 
+        initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+        getFirestore, collection, addDoc, getDocs, doc, getDoc, setDoc, deleteDoc, onSnapshot, query, orderBy, serverTimestamp, setLogLevel
+    } = window.firebaseSDK;
+
+    let gemstoneRowIdx = 0;
+    let accessoryRowIdx = 0;
+    let packagingRowIdx = 0;
+    let costChart;
+    const themeKey = 'jewelryCalculatorTheme';
+
+    let db, auth, userId, userProductsCollection;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id-jewelry-cost';
+
+    const el = {
+        loadingOverlay: document.getElementById('loadingOverlay'),
+        geminiLoadingOverlay: document.getElementById('geminiLoadingOverlay'),
+        themeToggle: document.getElementById('themeToggle'),
+        themeIcon: document.getElementById('themeIcon'),
+        productSKU: document.getElementById('productSKU'),
+        productName: document.getElementById('productName'),
+        designDate: document.getElementById('designDate'),
+        designerName: document.getElementById('designerName'),
+        productDescription: document.getElementById('productDescription'),
+        enhanceDescriptionBtn: document.getElementById('enhanceDescriptionBtn'),
+        gemstoneRows: document.getElementById('gemstoneRows'),
+        addGemstoneRowBtn: document.getElementById('addGemstoneRow'),
+        totalGemstoneCostSpan: document.getElementById('totalGemstoneCost'),
+        accessoryRows: document.getElementById('accessoryRows'),
+        addAccessoryRowBtn: document.getElementById('addAccessoryRow'),
+        totalAccessoryCostSpan: document.getElementById('totalAccessoryCost'),
+        fixedDesignFeeInput: document.getElementById('fixedDesignFee'),
+        allocatedOperatingCostInput: document.getElementById('allocatedOperatingCost'),
+        wastageRateInput: document.getElementById('wastageRate'),
+        wastageCostSpan: document.getElementById('wastageCost'),
+        laborHoursInput: document.getElementById('laborHours'),
+        hourlyRateInput: document.getElementById('hourlyRate'),
+        laborCostSpan: document.getElementById('laborCost'),
+        packagingRows: document.getElementById('packagingRows'),
+        addPackagingRowBtn: document.getElementById('addPackagingRow'),
+        totalPackagingCostSpan: document.getElementById('totalPackagingCost'),
+        summaryGemstoneCost: document.getElementById('summaryGemstoneCost'),
+        summaryAccessoryCost: document.getElementById('summaryAccessoryCost'),
+        summaryDesignFee: document.getElementById('summaryDesignFee'),
+        summaryOperatingCost: document.getElementById('summaryOperatingCost'),
+        summaryWastageCostSpan: document.getElementById('summaryWastageCost'),
+        summaryLaborCostSpan: document.getElementById('summaryLaborCost'),
+        summaryPackagingCostSpan: document.getElementById('summaryPackagingCost'),
+        totalDirectCostSpan: document.getElementById('totalDirectCost'),
+        profitMarkupInput: document.getElementById('profitMarkup'),
+        suggestedRetailPriceSpan: document.getElementById('suggestedRetailPrice'),
+        getCostAnalysisBtn: document.getElementById('getCostAnalysisBtn'),
+        costBreakdownChartCanvas: document.getElementById('costBreakdownChart').getContext('2d'),
+        currentYearSpan: document.querySelector('footer p span'), 
+        savedProductsSelect: document.getElementById('savedProducts'),
+        saveProductBtn: document.getElementById('saveProductBtn'),
+        loadProductBtn: document.getElementById('loadProductBtn'),
+        deleteProductBtn: document.getElementById('deleteProductBtn'),
+        generateReportBtn: document.getElementById('generateReportBtn'),
+        reportModal: document.getElementById('reportModal'),
+        reportContent: document.getElementById('reportContent'),
+        closeReportModalBtn: document.getElementById('closeReportModalBtn'),
+        closeReportModalBtnSecondary: document.getElementById('closeReportModalBtnSecondary'),
+        geminiResponseModal: document.getElementById('geminiResponseModal'),
+        geminiModalTitle: document.getElementById('geminiModalTitle'),
+        geminiResponseText: document.getElementById('geminiResponseText'),
+        closeGeminiModalBtn: document.getElementById('closeGeminiModalBtn'),
+        closeGeminiModalBtnSecondary: document.getElementById('closeGeminiModalBtnSecondary'),
+        copyGeminiResponseBtn: document.getElementById('copyGeminiResponseBtn')
+    };
+
+    function showLoading(show) {
+        el.loadingOverlay.classList.toggle('hidden', !show);
+    }
+    function showGeminiLoading(show, buttonElement) {
+        el.geminiLoadingOverlay.classList.toggle('hidden', !show);
+        if (buttonElement) {
+            buttonElement.disabled = show;
+            const spinner = buttonElement.querySelector('.spinner');
+            if (spinner) spinner.classList.toggle('hidden', !show);
+            else if (show) { 
+                const newSpinner = document.createElement('span');
+                newSpinner.className = 'spinner';
+                buttonElement.appendChild(newSpinner);
+            }
+        }
+    }
+    
+    function handleInputFocus(event) {
+        event.target.classList.add('has-value'); 
+    }
+    function handleInputBlur(event) {
+        if (!event.target.value && event.target.type !== 'date') { 
+            event.target.classList.remove('has-value');
+        }
+    }
+    function setupInputInteractions() {
+        const inputs = document.querySelectorAll('.input-field, .input-field-sm');
+        inputs.forEach(input => {
+            if (input.value || (input.type === 'date' && input.value) ) { 
+                input.classList.add('has-value');
+            } else if (input.type === 'date' && !input.value) { 
+                 input.classList.remove('has-value');
+            }
+
+            input.addEventListener('focus', handleInputFocus);
+            input.addEventListener('blur', handleInputBlur);
+            input.addEventListener('change', () => { 
+                 if (input.type === 'date') {
+                    input.classList.toggle('has-value', input.value !== '');
+                 }
+            });
+        });
+    }
+
+
+    async function initializeFirebase() {
+        showLoading(true);
+        try {
+            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+            if (!firebaseConfig) {
+                console.error("Firebase configuration is missing.");
+                alert("无法连接到数据库：缺少配置信息。请确保 Firebase 配置已正确设置。");
+                showLoading(false);
+                [el.saveProductBtn, el.loadProductBtn, el.deleteProductBtn].forEach(btn => {
+                    btn.disabled = true; btn.title = "数据库未配置";
+                    btn.classList.add('opacity-50', 'cursor-not-allowed');
+                });
+                el.savedProductsSelect.disabled = true;
+                return;
+            }
+            
+            const app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            setLogLevel('debug'); 
+
+            onAuthStateChanged(auth, async (user) => {
+                showLoading(true); 
+                if (user) {
+                    userId = user.uid;
+                    console.log("Authenticated user:", userId);
+                    userProductsCollection = collection(db, `artifacts/${appId}/users/${userId}/jewelry_products`);
+                    await populateSavedProductsSelect(); 
+                } else {
+                    console.log("User is signed out or auth state not yet determined. Attempting sign-in.");
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else { await signInAnonymously(auth); }
+                    } catch (authError) {
+                         console.error("Firebase auth error during re-attempt:", authError);
+                         alert("用户认证失败: " + authError.message);
+                         showLoading(false);
+                    }
+                }
+            });
+            
+            if (!auth.currentUser) {
+                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else { await signInAnonymously(auth); }
+            } else { 
+                if (!userId) { 
+                    userId = auth.currentUser.uid;
+                    userProductsCollection = collection(db, `artifacts/${appId}/users/${userId}/jewelry_products`);
+                    await populateSavedProductsSelect();
+                }
+                showLoading(false); 
+            }
+        } catch (error) {
+            console.error("Firebase initialization error:", error);
+            alert("数据库初始化失败: " + error.message);
+            showLoading(false);
+        }
+    }
+
+    function applyTheme(theme) {
+        if (theme === 'dark') {
+            document.documentElement.classList.add('dark-mode');
+            el.themeIcon.textContent = '🌙';
+        } else {
+            document.documentElement.classList.remove('dark-mode');
+            el.themeIcon.textContent = '☀️';
+        }
+        if (costChart) {
+            updateChartColors(theme);
+        }
+    }
+
+    function toggleTheme() {
+        const currentTheme = document.documentElement.classList.contains('dark-mode') ? 'dark' : 'light';
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        localStorage.setItem(themeKey, newTheme);
+        applyTheme(newTheme);
+    }
+    
+    function updateChartColors(theme) {
+        if (!costChart) return;
+        const isDark = theme === 'dark';
+        setTimeout(() => {
+            const legendColor = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
+            const tooltipBgColor = isDark ? getComputedStyle(document.documentElement).getPropertyValue('--input-bg').trim() : '#333';
+            const tooltipTitleColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim();
+            const tooltipBodyColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim();
+
+            costChart.options.plugins.legend.labels.color = legendColor;
+            costChart.options.plugins.tooltip.backgroundColor = tooltipBgColor;
+            costChart.options.plugins.tooltip.titleColor = tooltipTitleColor;
+            costChart.options.plugins.tooltip.bodyColor = tooltipBodyColor;
+            costChart.data.datasets[0].borderColor = getComputedStyle(document.documentElement).getPropertyValue('--card-bg').trim(); 
+            costChart.update();
+        }, 50);
+    }
+
+    function formatCurrency(value) {
+        const num = parseFloat(value);
+        return isNaN(num) ? '0.00' : num.toFixed(2);
+    }
+
+    function createMaterialRowHTML(type, idx) {
+        return `
+            <td class="px-1 py-1 col-name"><input type="text" class="input-field-sm name-field ${type}-name" placeholder=" "></td>
+            <td class="px-1 py-1 col-price"><input type="number" class="input-field-sm max-w-24 ${type}-purchase-price" placeholder=" " min="0" step="0.01"></td>
+            <td class="px-1 py-1 col-unit"><input type="text" class="input-field-sm max-w-20 ${type}-purchase-unit" placeholder=" "></td>
+            <td class="px-1 py-1 col-number"><input type="number" class="input-field-sm max-w-20 ${type}-unit-quantity" placeholder=" " min="0.001" step="0.001"></td>
+            <td class="px-1 py-1 text-xs sm:text-sm ${type}-unit-cost text-center col-price">0.00</td>
+            <td class="px-1 py-1 col-number"><input type="number" class="input-field-sm max-w-20 ${type}-quantity-used" placeholder=" " min="0" step="0.001"></td>
+            <td class="px-1 py-1 text-xs sm:text-sm ${type}-subtotal text-center col-price">0.00</td>
+            <td class="px-1 py-1 text-center col-action"><button class="btn btn-danger btn-sm text-xs !p-1" onclick="window.removeRow('${type}Row-${idx}')">移除</button></td>
+        `;
+    }
+     function createPackagingRowHTML(idx) { 
+        return `
+            <td class="px-1 py-1 col-name"><input type="text" class="input-field-sm name-field packaging-item-name" placeholder=" "></td>
+            <td class="px-1 py-1 col-price"><input type="number" class="input-field-sm max-w-24 packaging-purchase-price" placeholder=" " min="0" step="0.01"></td>
+            <td class="px-1 py-1 col-unit"><input type="text" class="input-field-sm max-w-20 packaging-purchase-unit" placeholder=" "></td>
+            <td class="px-1 py-1 col-number"><input type="number" class="input-field-sm max-w-20 packaging-unit-quantity" placeholder=" " min="1" step="1"></td>
+            <td class="px-1 py-1 text-xs sm:text-sm packaging-unit-cost text-center col-price">0.00</td>
+            <td class="px-1 py-1 col-number"><input type="number" class="input-field-sm max-w-20 packaging-quantity-used" placeholder=" " min="0" step="1"></td>
+            <td class="px-1 py-1 text-xs sm:text-sm packaging-subtotal text-center col-price">0.00</td>
+            <td class="px-1 py-1 text-center col-action"><button class="btn btn-danger btn-sm text-xs !p-1" onclick="window.removeRow('packagingRow-${idx}')">移除</button></td>
+        `;
+    }
+    
+    function addRowWithInputListeners(tableBody, rowId, htmlContent) {
+        const row = tableBody.insertRow();
+        row.id = rowId;
+        row.innerHTML = htmlContent;
+        row.querySelectorAll('input.input-field-sm').forEach(input => {
+            input.addEventListener('focus', handleInputFocus);
+            input.addEventListener('blur', handleInputBlur);
+            input.addEventListener('input', calculateAllCosts);
+             if (input.value) input.classList.add('has-value'); 
+        });
+        calculateAllCosts();
+    }
+
+
+    window.addGemstoneRow = function() {
+        gemstoneRowIdx++;
+        addRowWithInputListeners(el.gemstoneRows, `gemstoneRow-${gemstoneRowIdx}`, createMaterialRowHTML('gemstone', gemstoneRowIdx));
+    }
+
+    window.addAccessoryRow = function() {
+        accessoryRowIdx++;
+        addRowWithInputListeners(el.accessoryRows, `accessoryRow-${accessoryRowIdx}`, createMaterialRowHTML('accessory', accessoryRowIdx));
+    }
+    
+    window.addPackagingRow = function() {
+        packagingRowIdx++;
+        addRowWithInputListeners(el.packagingRows, `packagingRow-${packagingRowIdx}`, createPackagingRowHTML(packagingRowIdx));
+    }
+    
+    window.removeRow = function(rowId) {
+        const rowElement = document.getElementById(rowId);
+        if (rowElement) rowElement.remove();
+        calculateAllCosts();
+    }
+
+    function highlightValueChange(element, value) { 
+        if (!element) return;
+        const formattedValue = formatCurrency(value);
+        if (element.textContent !== formattedValue) {
+            element.textContent = formattedValue;
+            element.classList.remove('value-changed'); 
+            void element.offsetWidth; 
+            element.classList.add('value-changed');
+        } else {
+            element.textContent = formattedValue; 
+        }
+    }
+
+    function calculateSpecificMaterialCosts(rowsContainer, typePrefix, totalSpan) {
+        let totalCost = 0;
+        rowsContainer.querySelectorAll('tr').forEach(row => {
+            const purchasePrice = parseFloat(row.querySelector(`.${typePrefix}-purchase-price`).value) || 0;
+            const unitQuantity = parseFloat(row.querySelector(`.${typePrefix}-unit-quantity`).value) || 1;
+            const quantityUsed = parseFloat(row.querySelector(`.${typePrefix}-quantity-used`).value) || 0;
+            const unitCost = (purchasePrice && unitQuantity > 0) ? (purchasePrice / unitQuantity) : 0;
+            const subtotal = unitCost * quantityUsed;
+            row.querySelector(`.${typePrefix}-unit-cost`).textContent = formatCurrency(unitCost);
+            row.querySelector(`.${typePrefix}-subtotal`).textContent = formatCurrency(subtotal);
+            totalCost += subtotal;
+        });
+        highlightValueChange(totalSpan, totalCost);
+        return totalCost;
+    }
+    
+    function calculatePackagingCosts() {
+        let totalPackagingCost = 0;
+        el.packagingRows.querySelectorAll('tr').forEach(row => {
+            const purchasePrice = parseFloat(row.querySelector('.packaging-purchase-price').value) || 0;
+            const unitQuantity = parseFloat(row.querySelector('.packaging-unit-quantity').value) || 1; 
+            const quantityUsed = parseFloat(row.querySelector('.packaging-quantity-used').value) || 0;
+            
+            const unitCost = (purchasePrice && unitQuantity > 0) ? (purchasePrice / unitQuantity) : 0;
+            const subtotal = unitCost * quantityUsed;
+
+            row.querySelector('.packaging-unit-cost').textContent = formatCurrency(unitCost);
+            row.querySelector('.packaging-subtotal').textContent = formatCurrency(subtotal);
+            totalPackagingCost += subtotal;
+        });
+        highlightValueChange(el.totalPackagingCostSpan, totalPackagingCost);
+        return totalPackagingCost;
+    }
+
+
+    function calculateWastageCost(totalGemstoneCost, totalAccessoryCost) {
+        const totalMaterialCost = totalGemstoneCost + totalAccessoryCost;
+        const wastageRate = parseFloat(el.wastageRateInput.value) || 0;
+        const wastageCost = totalMaterialCost * (wastageRate / 100);
+        highlightValueChange(el.wastageCostSpan, wastageCost);
+        return wastageCost;
+    }
+
+    function calculateLaborCost() {
+        const laborHours = parseFloat(el.laborHoursInput.value) || 0;
+        const hourlyRate = parseFloat(el.hourlyRateInput.value) || 0;
+        const laborCost = laborHours * hourlyRate;
+        highlightValueChange(el.laborCostSpan, laborCost);
+        return laborCost;
+    }
+    
+    function getDesignAndOperatingCosts() {
+        const designFee = parseFloat(el.fixedDesignFeeInput.value) || 0;
+        const operatingCost = parseFloat(el.allocatedOperatingCostInput.value) || 0;
+        return { designFee, operatingCost };
+    }
+
+    function calculateAllCosts() {
+        const totalGemstoneCost = calculateSpecificMaterialCosts(el.gemstoneRows, 'gemstone', el.totalGemstoneCostSpan);
+        const totalAccessoryCost = calculateSpecificMaterialCosts(el.accessoryRows, 'accessory', el.totalAccessoryCostSpan);
+        const { designFee, operatingCost } = getDesignAndOperatingCosts();
+        const wastageCost = calculateWastageCost(totalGemstoneCost, totalAccessoryCost);
+        const laborCost = calculateLaborCost();
+        const totalPackagingCost = calculatePackagingCosts(); 
+        const totalDirectCost = totalGemstoneCost + totalAccessoryCost + designFee + operatingCost + wastageCost + laborCost + totalPackagingCost;
+
+        highlightValueChange(el.summaryGemstoneCost, totalGemstoneCost);
+        highlightValueChange(el.summaryAccessoryCost, totalAccessoryCost);
+        highlightValueChange(el.summaryDesignFee, designFee);
+        highlightValueChange(el.summaryOperatingCost, operatingCost);
+        highlightValueChange(el.summaryWastageCostSpan, wastageCost); 
+        highlightValueChange(el.summaryLaborCostSpan, laborCost); 
+        highlightValueChange(el.summaryPackagingCostSpan, totalPackagingCost); 
+        highlightValueChange(el.totalDirectCostSpan, totalDirectCost);
+
+
+        const profitMarkup = parseFloat(el.profitMarkupInput.value) || 1;
+        const suggestedRetailPrice = totalDirectCost * profitMarkup;
+        highlightValueChange(el.suggestedRetailPriceSpan, suggestedRetailPrice);
+        
+
+        updateChartData(totalGemstoneCost, totalAccessoryCost, designFee, operatingCost, wastageCost, laborCost, totalPackagingCost);
+    }
+
+    function initChart() {
+        Chart.defaults.font.family = 'Inter, sans-serif';
+        costChart = new Chart(el.costBreakdownChartCanvas, {
+            type: 'pie',
+            data: {
+                labels: ['宝石成本', '配件成本', '设计成本', '运营成本', '损耗成本', '人工成本', '包装成本'],
+                datasets: [{
+                    label: '成本构成', data: [0,0,0,0,0,0,0],
+                    backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#C9CBCF'],
+                    borderWidth: 2, hoverOffset: 4 
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                animation: {
+                    duration: 800, 
+                    easing: 'easeOutQuart'
+                },
+                plugins: { 
+                    legend: { position: 'bottom', labels: { padding: 15, font: { size: 11 }}}, 
+                    tooltip: { 
+                        callbacks: { label: (c) => `${c.label}: ¥${formatCurrency(c.parsed)}` },
+                        padding: 10, cornerRadius: 4
+                    } 
+                }
+            }
+        });
+        const preferredTheme = localStorage.getItem(themeKey) || 'light';
+        updateChartColors(preferredTheme); 
+    }
+
+    function updateChartData(gem, acc, design, op, waste, labor, pack) {
+        if (!costChart) return;
+        const data = [gem, acc, design, op, waste, labor, pack];
+        const allZero = data.every(item => item === 0);
+        costChart.data.datasets[0].data = allZero ? Array(data.length).fill(1) : data; 
+        costChart.update();
+    }
+    
+    async function populateSavedProductsSelect() {
+        if (!userProductsCollection) {
+            console.warn("User products collection not initialized for populateSavedProductsSelect.");
+            showLoading(false);
+            return;
+        }
+        try {
+            const q = query(userProductsCollection, orderBy("productName"));
+            onSnapshot(q, (querySnapshot) => {
+                const products = [];
+                querySnapshot.forEach((doc) => {
+                    products.push({ firestoreId: doc.id, ...doc.data() });
+                });
+                
+                el.savedProductsSelect.innerHTML = '<option value="">-- 选择已存档产品 --</option>';
+                products.forEach(p => {
+                    const option = document.createElement('option');
+                    option.value = p.firestoreId; 
+                    option.textContent = `${p.productSKU || 'N/A'} - ${p.productName || '未命名产品'}`;
+                    el.savedProductsSelect.appendChild(option);
+                });
+                showLoading(false);
+            }, (error) => {
+                console.error("Error fetching products with onSnapshot: ", error);
+                alert("加载产品列表实时更新失败: " + error.message);
+                showLoading(false);
+            });
+        } catch (error) {
+            console.error("Error setting up product listener in populate: ", error);
+            alert("设置产品监听失败: " + error.message);
+            showLoading(false);
+        }
+    }
+    
+    function clearForm(isInitialLoad = false) {
+        document.querySelectorAll('input[type="text"], input[type="number"], input[type="date"], textarea, select').forEach(input => {
+            if (input.tagName === 'SELECT') {
+                if (input.id === 'savedProducts' && !isInitialLoad) { /* Do nothing */ }
+                else { input.selectedIndex = 0; }
+            } else if(input.id === 'wastageRate') input.value = '5';
+            else if(input.id === 'laborHours') input.value = '0.75';
+            else if(input.id === 'hourlyRate') input.value = '60';
+            else if(input.id === 'profitMarkup') input.value = '3';
+            else if(input.id === 'fixedDesignFee' || input.id === 'allocatedOperatingCost') input.value = '0';
+            else input.value = '';
+            if (input.classList.contains('has-value') && input.type !== 'date') { 
+                 input.classList.remove('has-value');
+            } else if (input.type === 'date' && !input.value) { 
+                input.classList.remove('has-value');
+            }
+        });
+        el.gemstoneRows.innerHTML = ''; gemstoneRowIdx = 0;
+        el.accessoryRows.innerHTML = ''; accessoryRowIdx = 0;
+        el.packagingRows.innerHTML = ''; packagingRowIdx = 0;
+        
+        if(isInitialLoad){ addGemstoneRow(); addAccessoryRow(); addPackagingRow(); }
+        calculateAllCosts();
+    }
+
+    async function saveCurrentProduct() {
+        if (!userProductsCollection) { alert("数据库未连接或用户未认证，请稍后再试。"); return; }
+        const productSKU = el.productSKU.value.trim();
+        const productName = el.productName.value.trim();
+        if (!productSKU && !productName) { alert('产品款式编号 (SKU) 和产品名称不能为空！'); return; }
+        
+        const productData = {
+            productSKU: productSKU, productName: productName,
+            designDate: el.designDate.value, designerName: el.designerName.value, productDescription: el.productDescription.value,
+            gemstoneItems: Array.from(el.gemstoneRows.querySelectorAll('tr')).map(r => ({ name: r.querySelector('.gemstone-name').value, purchasePrice: r.querySelector('.gemstone-purchase-price').value, purchaseUnit: r.querySelector('.gemstone-purchase-unit').value, unitQuantity: r.querySelector('.gemstone-unit-quantity').value, quantityUsed: r.querySelector('.gemstone-quantity-used').value, })),
+            accessoryItems: Array.from(el.accessoryRows.querySelectorAll('tr')).map(r => ({ name: r.querySelector('.accessory-name').value, purchasePrice: r.querySelector('.accessory-purchase-price').value, purchaseUnit: r.querySelector('.accessory-purchase-unit').value, unitQuantity: r.querySelector('.accessory-unit-quantity').value, quantityUsed: r.querySelector('.accessory-quantity-used').value, })),
+            packagingItems: Array.from(el.packagingRows.querySelectorAll('tr')).map(r => ({ 
+                name: r.querySelector('.packaging-item-name').value, 
+                purchasePrice: r.querySelector('.packaging-purchase-price').value,
+                purchaseUnit: r.querySelector('.packaging-purchase-unit').value,
+                unitQuantity: r.querySelector('.packaging-unit-quantity').value,
+                quantityUsed: r.querySelector('.packaging-quantity-used').value,
+            })),
+            fixedDesignFee: el.fixedDesignFeeInput.value, allocatedOperatingCost: el.allocatedOperatingCostInput.value,
+            wastageRate: el.wastageRateInput.value, laborHours: el.laborHoursInput.value, hourlyRate: el.hourlyRateInput.value,
+            profitMarkup: el.profitMarkupInput.value,
+            updatedAt: serverTimestamp() 
+        };
+
+        showLoading(true);
+        try {
+            const selectedProductId = el.savedProductsSelect.value; 
+            let operationPerformed = '';
+
+            if (selectedProductId) {
+                 if(confirm(`您正在编辑已加载的产品。\n您要更新 "${productName}" (SKU: ${productSKU}) 吗？`)){
+                    const productDocRef = doc(userProductsCollection, selectedProductId);
+                    await setDoc(productDocRef, productData, { merge: true }); 
+                    operationPerformed = `产品 "${productName}" 已更新！`;
+                } else { showLoading(false); return; }
+            } else {
+                productData.createdAt = serverTimestamp();
+                const docRef = await addDoc(userProductsCollection, productData);
+                operationPerformed = `产品 "${productName}" 已新增保存！`;
+            }
+            if(operationPerformed) alert(operationPerformed);
+
+        } catch (error) {
+            console.error("Error saving product: ", error);
+            alert("保存产品失败: " + error.message);
+        } finally {
+            showLoading(false);
+        }
+    }
+
+    async function loadSelectedProduct() {
+        if (!userProductsCollection) { alert("数据库未连接或用户未认证，请稍后再试。"); return; }
+        const productId = el.savedProductsSelect.value; 
+        if (!productId) { alert('请先从列表中选择一个已存档的产品！'); return; }
+        
+        showLoading(true);
+        try {
+            const productDocRef = doc(userProductsCollection, productId);
+            const productSnap = await getDoc(productDocRef);
+
+            if (!productSnap.exists()) {
+                alert('未找到选定的产品数据！'); showLoading(false); return;
+            }
+            const product = productSnap.data();
+
+            clearForm(false); 
+            el.productSKU.value = product.productSKU || ''; el.productName.value = product.productName || '';
+            el.designDate.value = product.designDate || ''; el.designerName.value = product.designerName || '';
+            el.productDescription.value = product.productDescription || '';
+            (product.gemstoneItems || []).forEach(item => { addGemstoneRow(); const r = el.gemstoneRows.lastChild; r.querySelector('.gemstone-name').value = item.name; r.querySelector('.gemstone-purchase-price').value = item.purchasePrice; r.querySelector('.gemstone-purchase-unit').value = item.purchaseUnit; r.querySelector('.gemstone-unit-quantity').value = item.unitQuantity; r.querySelector('.gemstone-quantity-used').value = item.quantityUsed; });
+            if (!el.gemstoneRows.hasChildNodes() && (product.gemstoneItems || []).length === 0) addGemstoneRow();
+            (product.accessoryItems || []).forEach(item => { addAccessoryRow(); const r = el.accessoryRows.lastChild; r.querySelector('.accessory-name').value = item.name; r.querySelector('.accessory-purchase-price').value = item.purchasePrice; r.querySelector('.accessory-purchase-unit').value = item.purchaseUnit; r.querySelector('.accessory-unit-quantity').value = item.unitQuantity; r.querySelector('.accessory-quantity-used').value = item.quantityUsed; });
+            if (!el.accessoryRows.hasChildNodes() && (product.accessoryItems || []).length === 0) addAccessoryRow();
+            
+            (product.packagingItems || []).forEach(item => { 
+                addPackagingRow(); 
+                const r = el.packagingRows.lastChild; 
+                r.querySelector('.packaging-item-name').value = item.name; 
+                r.querySelector('.packaging-purchase-price').value = item.purchasePrice;
+                r.querySelector('.packaging-purchase-unit').value = item.purchaseUnit;
+                r.querySelector('.packaging-unit-quantity').value = item.unitQuantity;
+                r.querySelector('.packaging-quantity-used').value = item.quantityUsed;
+            });
+            if (!el.packagingRows.hasChildNodes() && (product.packagingItems || []).length === 0) addPackagingRow();
+
+            el.fixedDesignFeeInput.value = product.fixedDesignFee || '0'; el.allocatedOperatingCostInput.value = product.allocatedOperatingCost || '0';
+            el.wastageRateInput.value = product.wastageRate || '5'; el.laborHoursInput.value = product.laborHours || '0.75';
+            el.hourlyRateInput.value = product.hourlyRate || '60';
+            el.profitMarkupInput.value = product.profitMarkup || '3';
+            
+            document.querySelectorAll('.input-field, .input-field-sm').forEach(input => {
+                if(input.value || (input.type === 'date' && input.value) ) input.classList.add('has-value');
+                else input.classList.remove('has-value');
+            });
+
+            calculateAllCosts(); 
+            alert(`产品 "${product.productName}" 数据已加载！`);
+        } catch (error) {
+            console.error("Error loading product: ", error);
+            alert("加载产品失败: " + error.message);
+        } finally {
+            showLoading(false);
+        }
+    }
+    
+    async function deleteSelectedProduct() {
+        if (!userProductsCollection) { alert("数据库未连接或用户未认证，请稍后再试。"); return; }
+        const productId = el.savedProductsSelect.value; 
+        const selectedOption = el.savedProductsSelect.options[el.savedProductsSelect.selectedIndex];
+        const productName = selectedOption ? selectedOption.text.split(' - ')[1] || "选中的产品" : "选中的产品";
+
+        if (!productId) { alert('请先从列表中选择一个要删除的产品！'); return; }
+        if (!confirm(`您确定要删除产品 "${productName}" 吗？\n此操作不可撤销。`)) return;
+        
+        showLoading(true);
+        try {
+            const productDocRef = doc(userProductsCollection, productId);
+            await deleteDoc(productDocRef);
+            clearForm(true); 
+            alert(`产品 "${productName}" 已删除！`);
+        } catch (error) {
+            console.error("Error deleting product: ", error);
+            alert("删除产品失败: " + error.message);
+        } finally {
+            showLoading(false);
+        }
+    }
+
+    function generateProductReport() {
+        const sku = el.productSKU.value || '未填写'; const name = el.productName.value || '未命名产品';
+        if (sku === '未填写' && name === '未命名产品' && parseFloat(el.totalDirectCostSpan.textContent) === 0) { alert("请输入或加载产品数据以生成报告。"); return; }
+        let reportHTML = `<div class="text-center mb-6"><h3 class="text-xl font-semibold" style="color: var(--accent-teal);">${name} (SKU: ${sku})</h3></div> <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3"> <p><strong>设计日期:</strong> ${el.designDate.value || 'N/A'}</p> <p><strong>设计师:</strong> ${el.designerName.value || 'N/A'}</p> <p class="sm:col-span-2"><strong>产品描述:</strong> ${el.productDescription.value || 'N/A'}</p> </div> <hr class="my-4" style="border-color: var(--border-color);"> <h4 class="text-lg font-semibold mb-2" style="color: var(--text-secondary);">成本明细:</h4> <div class="space-y-1">`;
+        const costs = [ { label: '宝石总成本', value: el.summaryGemstoneCost.textContent }, { label: '配件总成本', value: el.summaryAccessoryCost.textContent }, { label: '固定设计费', value: el.summaryDesignFee.textContent }, { label: '运营成本分摊', value: el.summaryOperatingCost.textContent }, { label: '损耗成本', value: el.summaryWastageCostSpan.textContent }, { label: '人工成本 (制作)', value: el.summaryLaborCostSpan.textContent }, { label: '包装总成本', value: el.summaryPackagingCostSpan.textContent }, ];
+        costs.forEach(cost => { reportHTML += `<div class="flex justify-between" style="color: var(--text-primary);"><span>${cost.label}:</span><span class="font-medium">¥${cost.value}</span></div>`; });
+        reportHTML += `</div> <div class="flex justify-between mt-2 pt-2 font-bold text-base total-summary-item"><span>直接总成本:</span><span>¥${el.totalDirectCostSpan.textContent}</span></div> <hr class="my-4" style="border-color: var(--border-color);"> <h4 class="text-lg font-semibold mb-2" style="color: var(--text-secondary);">定价信息:</h4> <div class="flex justify-between" style="color: var(--text-primary);"><span>目标利润倍数:</span><span class="font-medium">${el.profitMarkupInput.value}</span></div> <div class="flex justify-between text-xl font-bold mt-1" style="color: var(--accent-teal);"><span>建议零售价 (SRP):</span><span>¥${el.suggestedRetailPriceSpan.textContent}</span></div>`;
+        el.reportContent.innerHTML = reportHTML; el.reportModal.classList.remove('hidden');
+    }
+    
+    async function callGeminiAPI(prompt, modalTitle, buttonElement) { 
+        showGeminiLoading(true, buttonElement); 
+        el.geminiModalTitle.textContent = modalTitle;
+        el.geminiResponseText.textContent = '正在生成内容...';
+        el.geminiResponseModal.classList.remove('hidden');
+
+        let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+        const payload = { contents: chatHistory };
+        const apiKey = ""; 
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(`API Error (${response.status}): ${errorData.error?.message || 'Unknown error'}`);
+            }
+            const result = await response.json();
+            
+            if (result.candidates && result.candidates.length > 0 &&
+                result.candidates[0].content && result.candidates[0].content.parts &&
+                result.candidates[0].content.parts.length > 0) {
+                const text = result.candidates[0].content.parts[0].text;
+                el.geminiResponseText.textContent = text;
+            } else {
+                console.error('Unexpected Gemini API response structure:', result);
+                el.geminiResponseText.textContent = '未能获取有效回复，请检查API响应结构。';
+            }
+        } catch (error) {
+            console.error('Error calling Gemini API:', error);
+            el.geminiResponseText.textContent = `调用AI服务时出错：${error.message}`;
+        } finally {
+            showGeminiLoading(false, buttonElement); 
+        }
+    }
+
+    el.enhanceDescriptionBtn.addEventListener('click', (event) => {
+        const productName = el.productName.value || "未命名产品";
+        const productSKU = el.productSKU.value || "无SKU";
+        const currentDescription = el.productDescription.value || "无";
+        
+        let materials = [];
+        el.gemstoneRows.querySelectorAll('tr').forEach(row => {
+            const name = row.querySelector('.gemstone-name').value;
+            if (name) materials.push(name);
+        });
+        el.accessoryRows.querySelectorAll('tr').forEach(row => {
+            const name = row.querySelector('.accessory-name').value;
+            if (name) materials.push(name);
+        });
+        const materialString = materials.length > 0 ? materials.join(', ') : '未指定';
+
+        const prompt = `请为一款名为 "${productName}" (SKU: ${productSKU}) 的珠宝产品优化以下描述。
+        当前描述: "${currentDescription}"
+        主要材质包括: ${materialString}。
+        请生成一段更吸引人、更专业的营销描述，突出其特点和魅力，适合用于电商平台或社交媒体。请用中文回答。`;
+        callGeminiAPI(prompt, '✨ AI 产品描述优化', event.currentTarget); 
+    });
+
+    el.getCostAnalysisBtn.addEventListener('click', (event) => {
+        const costs = {
+            "宝石总成本": el.summaryGemstoneCost.textContent,
+            "配件总成本": el.summaryAccessoryCost.textContent,
+            "固定设计费": el.summaryDesignFee.textContent,
+            "运营成本分摊": el.summaryOperatingCost.textContent,
+            "损耗成本": el.summaryWastageCostSpan.textContent,
+            "人工成本": el.summaryLaborCostSpan.textContent,
+            "包装总成本": el.summaryPackagingCostSpan.textContent,
+            "直接总成本": el.totalDirectCostSpan.textContent,
+            "建议零售价": el.suggestedRetailPriceSpan.textContent,
+            "利润倍数": el.profitMarkupInput.value
+        };
+        const costString = Object.entries(costs).map(([key, value]) => `${key}: ¥${value}`).join('\n');
+        
+        const prompt = `我有一款珠宝产品，其成本构成如下：
+        ${costString}
+        请基于这些成本数据，提供一些关于成本控制、潜在盈利点分析或定价策略方面的建议和思考点。请用中文回答，并以易于理解的方式呈现。`;
+        callGeminiAPI(prompt, '✨ AI 成本分析与建议', event.currentTarget); 
+    });
+    
+    el.closeGeminiModalBtn.addEventListener('click', () => el.geminiResponseModal.classList.add('hidden'));
+    el.closeGeminiModalBtnSecondary.addEventListener('click', () => el.geminiResponseModal.classList.add('hidden'));
+    el.copyGeminiResponseBtn.addEventListener('click', () => {
+        const textToCopy = el.geminiResponseText.textContent;
+        const textArea = document.createElement("textarea");
+        textArea.value = textToCopy;
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+            document.execCommand('copy');
+            alert('内容已复制到剪贴板！');
+        } catch (err) {
+            console.error('无法复制文本: ', err);
+            alert('复制失败，请手动复制。');
+        }
+        document.body.removeChild(textArea);
+    });
+
+
+    el.themeToggle.addEventListener('click', toggleTheme);
+    el.addGemstoneRowBtn.addEventListener('click', addGemstoneRow);
+    el.addAccessoryRowBtn.addEventListener('click', addAccessoryRow);
+    el.addPackagingRowBtn.addEventListener('click', addPackagingRow);
+    
+    document.querySelectorAll('.input-field, .input-field-sm').forEach(input => {
+        input.addEventListener('input', () => {
+            input.classList.toggle('has-value', input.value !== '');
+            if (input.closest('.form-group') || input.closest('table')) { 
+                 if(['fixedDesignFee', 'allocatedOperatingCost', 'wastageRate', 'laborHours', 'hourlyRate', 'profitMarkup'].includes(input.id) || input.closest('table')) {
+                    calculateAllCosts();
+                 }
+            }
+        });
+        input.addEventListener('blur', () => { 
+            input.classList.toggle('has-value', input.value !== '');
+        });
+    });
+
+
+    el.saveProductBtn.addEventListener('click', saveCurrentProduct);
+    el.loadProductBtn.addEventListener('click', loadSelectedProduct);
+    el.deleteProductBtn.addEventListener('click', deleteSelectedProduct);
+    el.generateReportBtn.addEventListener('click', generateProductReport);
+    el.closeReportModalBtn.addEventListener('click', () => el.reportModal.classList.add('hidden'));
+    el.closeReportModalBtnSecondary.addEventListener('click', () => el.reportModal.classList.add('hidden'));
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        if(el.currentYearSpan) el.currentYearSpan.textContent = new Date().getFullYear();
+        const preferredTheme = localStorage.getItem(themeKey) || 'light';
+        applyTheme(preferredTheme);
+        
+        setupInputInteractions(); 
+        await initializeFirebase(); 
+        
+        clearForm(true); 
+        initChart();
+    });
+
+</script>
+</body>
+</html>
